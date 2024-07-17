@@ -1,5 +1,6 @@
 import logging
 import signal
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from multiprocessing import Event, Process, Queue, current_process
@@ -118,6 +119,7 @@ def schedule_workers_reload(
 
 def get_signal_handler(
     action_queue: "Queue[ProcessActionBase]",
+    action_to_send: ProcessActionBase,
 ) -> Callable[[int, Any], None]:
     """
     Generate signal handler for main process.
@@ -126,6 +128,7 @@ def get_signal_handler(
     the action queue.
 
     :param action_queue: event queue.
+    :param action_to_send: action that will be sent to the queue on signal.
     :returns: actual signal handler.
     """
 
@@ -134,7 +137,7 @@ def get_signal_handler(
             raise KeyboardInterrupt
 
         logger.debug(f"Got signal {signum}.")
-        action_queue.put(ShutdownAction())
+        action_queue.put(action_to_send)
         logger.warning("Workers are scheduled for shutdown.")
 
     return _signal_handler
@@ -169,9 +172,14 @@ class ProcessManager:
                 recursive=True,
             )
 
-        signal_handler = get_signal_handler(self.action_queue)
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        shutdown_handler = get_signal_handler(self.action_queue, ShutdownAction())
+        signal.signal(signal.SIGINT, shutdown_handler)
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        if sys.platform != "win32":
+            signal.signal(
+                signal.SIGHUP,
+                get_signal_handler(self.action_queue, ReloadAllAction()),
+            )
 
         self.workers: List[Process] = []
 
